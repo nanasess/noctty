@@ -122,7 +122,15 @@ function Stop-BenchPresentMonCapture {
         # PresentMon flushes the CSV on a clean shutdown. Killing it can leave a
         # truncated final row, so ask the session to stop first and only fall
         # back to a kill if it refuses.
-        & (Get-BenchPresentMonPath) --session_name $Capture.SessionName --terminate_existing_session 2>&1 | Out-Null
+        #
+        # This runs through Start-Process on purpose. PresentMon writes
+        # "--terminate_existing_session exits without capturing anything" to
+        # stderr even when the stop succeeds, and piping that into the shell
+        # turns it into a terminating error under the harness's
+        # $ErrorActionPreference = 'Stop'.
+        $null = Start-Process -FilePath (Get-BenchPresentMonPath) `
+            -ArgumentList @('--session_name', $Capture.SessionName, '--terminate_existing_session') `
+            -Wait -WindowStyle Hidden -PassThru
         if (-not $Capture.Process.WaitForExit($TimeoutSeconds * 1000)) {
             $Capture.Process.Kill()
             $Capture.Process.WaitForExit(5000) | Out-Null
