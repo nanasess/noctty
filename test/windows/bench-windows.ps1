@@ -2287,11 +2287,14 @@ if ($script:adapter.Installed) {
                     try { Stop-BenchPresentMonCapture -Capture $capture }
                     catch { $measurementErrors.Add("cold-start-first-present capture stop: $($_.Exception.Message)") }
                 }
-                $rows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
-                if ($rows.Count -eq 0) {
+                # Not $rows: PowerShell variable names are case-insensitive, so
+                # that would assign into the script's [ValidateRange(10,500)] [int]
+                # $Rows parameter and fail on the row count.
+                $presentRows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
+                if ($presentRows.Count -eq 0) {
                     throw "PresentMon observed no present for pid $($run.Process.Id) ($presentMonProcessName)"
                 }
-                $firstPresentQpc = Get-BenchFirstPresentQpc -Rows $rows
+                $firstPresentQpc = Get-BenchFirstPresentQpc -Rows $presentRows
                 $delta = Get-BenchQpcDeltaMilliseconds -StartQpc $run.LaunchQpc -EndQpc $firstPresentQpc
                 if ($null -eq $delta) { throw 'the first observed present precedes the launch sample' }
                 $firstPresentSamples.Add($delta)
@@ -2353,8 +2356,8 @@ if ($script:adapter.Installed) {
                 }
                 # Zero is a legitimate and desirable result here, so an empty
                 # row set is a sample rather than a failure.
-                $rows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
-                $presentCountSamples.Add([double] $rows.Count)
+                $presentRows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
+                $presentCountSamples.Add([double] $presentRows.Count)
             }
             $metrics.Add((New-BenchMetricRecord -Name 'idle_present_count' -Unit 'count' -Samples $presentCountSamples.ToArray() -Details $idlePresentDetails))
         }
