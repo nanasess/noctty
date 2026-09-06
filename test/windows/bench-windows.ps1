@@ -27,6 +27,7 @@ $launcherPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCo
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $libPath = Join-Path $repoRoot 'scripts\interactive-win11-lib.ps1'
 . $libPath
+. (Join-Path $PSScriptRoot 'bench-presentmon.ps1')
 
 if (-not $env:NOCTTY_BENCH_WINDOWS_BOOTSTRAPPED) {
     $forwardedArgs = @(
@@ -502,13 +503,16 @@ function Get-BenchWindowsTerminalCandidate {
 function Get-BenchTargetAdapter {
     param([Parameter(Mandatory)] [string] $Name)
 
-    $candidates = switch ($Name) {
+    # `switch` unrolls a single-element array into a scalar, and the noctty
+    # branch has exactly one candidate. Without @() around it, the fallback
+    # below indexes a string and resolves to its first character.
+    $candidates = @(switch ($Name) {
         'noctty' { @(Get-InteractiveWin11ExePath -RepoRoot $repoRoot) }
         'alacritty' { @('C:\Program Files\Alacritty\alacritty.exe') }
         'windows-terminal' { @((Get-BenchWindowsTerminalCandidate), 'wt.exe') }
         'tabby' { @('tabby.exe', (Join-Path $env:LOCALAPPDATA 'Programs\Tabby\Tabby.exe')) }
         'wave' { @('wave.exe', (Join-Path $env:LOCALAPPDATA 'Programs\Wave\Wave.exe')) }
-    }
+    })
     $resolved = $null
     foreach ($candidate in $candidates) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
@@ -666,6 +670,9 @@ function Start-BenchTarget {
         Remove-Item Env:NOCTTY_BENCH_END_MARKER -ErrorAction SilentlyContinue
     }
 
+    # Sampled on the same counter PresentMon stamps its rows with, so the
+    # cold-start delta below never crosses clock domains.
+    $launchQpc = [Diagnostics.Stopwatch]::GetTimestamp()
     $watch = [Diagnostics.Stopwatch]::StartNew()
     try {
         $process = Start-Process `
@@ -706,6 +713,7 @@ function Start-BenchTarget {
         ProcessRecord = $processRecord
         ProcessHandle = $processHandle
         Stopwatch = $watch
+        LaunchQpc = $launchQpc
         StdoutPath = $stdoutPath
         StderrPath = $stderrPath
         TracePath = $TracePath
@@ -757,6 +765,23 @@ function Wait-BenchFile {
         Start-Sleep -Milliseconds 20
     }
     throw "Timed out waiting for $Description at $Path"
+}
+
+# FindTopLevelWindow needs a window class, which is noctty-specific. The
+# process's own main window handle works for any target, which is what a
+# symmetric measurement needs.
+function Wait-BenchTargetMainWindow {
+    param([Parameter(Mandatory)] $Run)
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $Run.Process.Refresh()
+        if ($Run.Process.HasExited) { throw 'the target exited before it showed a window' }
+        $handle = $Run.Process.MainWindowHandle
+        if ($handle -ne [IntPtr]::Zero) { return $handle }
+        Start-Sleep -Milliseconds 50
+    }
+    throw 'the target did not show a main window before the timeout'
 }
 
 function Wait-BenchNocttyWindow {
@@ -2223,6 +2248,272 @@ if ($script:adapter.Installed) {
             $metrics.Add((New-BenchMetricRecord -Name 'key_to_first_swap_ms_proxy' -Unit 'ms' -Status error -Details ([ordered]@{ proxy_kind = 'software SendInput-to-successful-SwapBuffers proxy; accepted swap must consume the controlled echo output generation'; clock = 'cross-process QueryPerformanceCounter'; excludes_post_swap_trace_observation_delay = $true; render_trace_snapshot_request_observer_included = $true; render_trace_target_observer_included = $true; photon_measurement = $false; render_trace_path = $lastTracePath; error = $_.Exception.Message })))
         }
     }
+    }
+
+    # PresentMon comparability layer.
+    #
+    # Every metric above reads noctty's own instrumentation - the render-trace
+    # field `process_start_to_first_swap_ms`, the in-process swap atomics - so
+    # it cannot describe another terminal, and it stays `not-supported` for
+    # other targets on purpose. The two metrics below use one external observer
+    # for every target instead: presents reported through ETW with
+    # QueryPerformanceCounter timestamps. That is the presentation evidence
+    # `New-BenchAdapterRequiredMetric` asks for, and it is the only ground on
+    # which a cross-terminal number here is allowed to stand. They are new
+    # metric names, not competitor fills for the noctty-only ones, because the
+    # endpoints genuinely differ.
+    $presentMonReason = Test-BenchPresentMonReady
+    $presentMonProcessName = [IO.Path]::GetFileName($script:adapter.ExePath)
+    $presentMonVersion = Get-BenchPresentMonVersion
+
+    if (Test-BenchMetricRequested -Name 'cold-start') {
+        $firstPresentSamples = [Collections.Generic.List[double]]::new()
+        $firstPresentDetails = [ordered]@{
+            endpoint = 'first present attributed to the launched process id'
+            clock = 'QueryPerformanceCounter'
+            clock_origin = 'harness sample immediately before CreateProcess; includes OS loader time'
+            not_comparable_with = 'cold_start_app_ms, whose origin is main entry and which excludes pre-main loader time'
+            observer = 'PresentMon ETW'
+            observer_version = $presentMonVersion
+            symmetric_across_targets = $true
+            process_id_filtered = $true
+        }
+        try {
+            if ($null -ne $presentMonReason) { throw $presentMonReason }
+            foreach ($runNumber in 1..$Runs) {
+                $name = "presentmon-cold-start-$runNumber"
+                $readyPath = Join-Path $layout.Temp "$name-ready.txt"
+                $csvPath = Join-Path $layout.Temp "$name-presents.csv"
+                Remove-Item -LiteralPath $readyPath -ErrorAction SilentlyContinue
+                if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
+                $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
+                $run = $null
+                $captureStopError = $null
+                try {
+                    # The trace session has to be live before the target exists,
+                    # or the first present lands outside the capture window.
+                    Start-Sleep -Milliseconds 500
+                    $run = Start-BenchTarget -RunName $name -ChildScript $script:holdScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath)
+                    Wait-BenchFile -Path $readyPath -Run $run -Description 'PresentMon cold-start child readiness'
+                    Start-Sleep -Milliseconds 500
+                }
+                finally {
+                    # Both cleanups have to run even when one throws. A surviving
+                    # terminal window would otherwise absorb every later launch.
+                    try { if ($null -ne $run) { Stop-BenchTarget -Run $run } }
+                    catch { $measurementErrors.Add("cold-start-first-present target cleanup: $($_.Exception.Message)") }
+                    try { Stop-BenchPresentMonCapture -Capture $capture }
+                    catch { $captureStopError = $_.Exception.Message }
+                }
+                # A capture that would not stop cleanly cannot be trusted as a
+                # first-present record, so say that instead of reading the file
+                # anyway and reporting whatever surfaced.
+                if (-not [string]::IsNullOrWhiteSpace($captureStopError)) { throw $captureStopError }
+                # Not $rows: PowerShell variable names are case-insensitive, so
+                # that would assign into the script's [ValidateRange(10,500)] [int]
+                # $Rows parameter and fail on the row count.
+                $presentRows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
+                if ($presentRows.Count -eq 0) {
+                    throw "PresentMon observed no present for pid $($run.Process.Id) ($presentMonProcessName)"
+                }
+                $firstPresentQpc = Get-BenchFirstPresentQpc -Rows $presentRows
+                $delta = Get-BenchQpcDeltaMilliseconds -StartQpc $run.LaunchQpc -EndQpc $firstPresentQpc
+                if ($null -eq $delta) { throw 'the first observed present precedes the launch sample' }
+                $firstPresentSamples.Add($delta)
+            }
+            $metrics.Add((New-BenchMetricRecord -Name 'cold_start_first_present_ms' -Unit 'ms' -Samples $firstPresentSamples.ToArray() -Details $firstPresentDetails))
+        }
+        catch {
+            $measurementErrors.Add("cold-start-first-present: $($_.Exception.Message)")
+            if ($null -ne $presentMonReason) {
+                $metrics.Add((New-BenchMetricRecord -Name 'cold_start_first_present_ms' -Unit 'ms' -Status 'not-supported' -Details ([ordered]@{
+                    adapter_requirement = "the PresentMon observer is unavailable: $presentMonReason"
+                    comparability_requirement = 'measurement must end at equivalent causal presentation/process-state evidence; producer-only timing is rejected'
+                    required_tooling = 'elevated shell with Intel PresentMon Console on PATH'
+                })))
+            }
+            else {
+                $firstPresentDetails.error = $_.Exception.Message
+                $metrics.Add((New-BenchMetricRecord -Name 'cold_start_first_present_ms' -Unit 'ms' -Status 'error' -Details $firstPresentDetails))
+            }
+        }
+    }
+
+    if (Test-BenchMetricRequested -Name 'idle') {
+        $presentCountSamples = [Collections.Generic.List[double]]::new()
+        $gpuBusySamples = [Collections.Generic.List[double]]::new()
+        $idlePresentDetails = [ordered]@{
+            endpoint = 'displayed presents attributed to the launched process id during the idle window'
+            idle_window_carved_by_timestamp = $true
+            idle_interval_seconds = $IdleSeconds
+            settle_seconds = 2
+            not_comparable_with = 'idle_swap_count_delta, which counts in-process swap atomics rather than displayed presents'
+            observer = 'PresentMon ETW'
+            observer_version = $presentMonVersion
+            symmetric_across_targets = $true
+            process_id_filtered = $true
+        }
+        try {
+            if ($null -ne $presentMonReason) { throw $presentMonReason }
+            foreach ($runNumber in 1..$Runs) {
+                $name = "presentmon-idle-$runNumber"
+                $readyPath = Join-Path $layout.Temp "$name-ready.txt"
+                $csvPath = Join-Path $layout.Temp "$name-presents.csv"
+                Remove-Item -LiteralPath $readyPath -ErrorAction SilentlyContinue
+                if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
+                # The capture has to be live before the target starts. PresentMon
+                # reported nothing at all for a noctty that was already running
+                # when the session opened, while reporting a Windows Terminal in
+                # the same position, so a capture opened afterwards measures the
+                # observer rather than the terminal. The idle window is carved
+                # out of the capture by timestamp instead.
+                $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
+                $run = $null
+                $idleFromQpc = 0L
+                $idleToQpc = 0L
+                try {
+                    Start-Sleep -Milliseconds 500
+                    $run = Start-BenchTarget -RunName $name -ChildScript $script:holdScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath)
+                    Wait-BenchFile -Path $readyPath -Run $run -Description 'PresentMon idle child readiness'
+                    # Startup presents are not idle presents.
+                    Start-Sleep -Seconds 2
+                    $idleFromQpc = [Diagnostics.Stopwatch]::GetTimestamp()
+                    Start-Sleep -Seconds $IdleSeconds
+                    $idleToQpc = [Diagnostics.Stopwatch]::GetTimestamp()
+                }
+                finally {
+                    try { if ($null -ne $run) { Stop-BenchTarget -Run $run } }
+                    catch { $measurementErrors.Add("idle-present-count target cleanup: $($_.Exception.Message)") }
+                    try { Stop-BenchPresentMonCapture -Capture $capture }
+                    catch { $measurementErrors.Add("idle-present-count capture stop: $($_.Exception.Message)") }
+                }
+                # Zero is a legitimate and desirable result here, so an empty
+                # row set is a sample rather than a failure.
+                $presentRows = Get-BenchPresentRowsBetween -Rows (Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id) -FromQpc $idleFromQpc -ToQpc $idleToQpc
+                $presentCountSamples.Add([double] $presentRows.Count)
+                $gpuBusySamples.Add((Get-BenchPresentGpuBusyMs -Rows $presentRows))
+            }
+            $metrics.Add((New-BenchMetricRecord -Name 'idle_present_count' -Unit 'count' -Samples $presentCountSamples.ToArray() -Details $idlePresentDetails))
+            $metrics.Add((New-BenchMetricRecord -Name 'idle_present_gpu_busy_ms' -Unit 'ms' -Samples $gpuBusySamples.ToArray() -Details ([ordered]@{
+                endpoint = 'GPU work PresentMon attributes to the displayed presents of the launched process id during the idle window'
+                gpu_work_scope = 'per-present MsGPUBusy only; GPU work that never reaches a present is not counted, so this is not a GPU utilisation figure'
+                dropped_frames_excluded = $true
+                idle_interval_seconds = $IdleSeconds
+                settle_seconds = 2
+                not_comparable_with = 'idle_gpu_percent, which is a whole-process GPU-engine utilisation rather than present-attributed work'
+                observer = 'PresentMon ETW'
+                observer_version = $presentMonVersion
+                symmetric_across_targets = $true
+                process_id_filtered = $true
+            })))
+        }
+        catch {
+            $measurementErrors.Add("idle-present-count: $($_.Exception.Message)")
+            if ($null -ne $presentMonReason) {
+                foreach ($unavailable in @(@{ n = 'idle_present_count'; u = 'count' }, @{ n = 'idle_present_gpu_busy_ms'; u = 'ms' })) {
+                    $metrics.Add((New-BenchMetricRecord -Name $unavailable.n -Unit $unavailable.u -Status 'not-supported' -Details ([ordered]@{
+                        adapter_requirement = "the PresentMon observer is unavailable: $presentMonReason"
+                        comparability_requirement = 'measurement must end at equivalent causal presentation/process-state evidence; producer-only timing is rejected'
+                        required_tooling = 'elevated shell with Intel PresentMon Console on PATH'
+                    })))
+                }
+            }
+            else {
+                $idlePresentDetails.error = $_.Exception.Message
+                $metrics.Add((New-BenchMetricRecord -Name 'idle_present_count' -Unit 'count' -Status 'error' -Details $idlePresentDetails))
+                $metrics.Add((New-BenchMetricRecord -Name 'idle_present_gpu_busy_ms' -Unit 'ms' -Status 'error' -Details ([ordered]@{
+                    endpoint = 'GPU work PresentMon attributes to the displayed presents of the launched process id during the idle window'
+                    gpu_work_scope = 'per-present MsGPUBusy only; GPU work that never reaches a present is not counted, so this is not a GPU utilisation figure'
+                    dropped_frames_excluded = $true
+                    idle_interval_seconds = $IdleSeconds
+                    settle_seconds = 2
+                    not_comparable_with = 'idle_gpu_percent, which is a whole-process GPU-engine utilisation rather than present-attributed work'
+                    observer = 'PresentMon ETW'
+                    observer_version = $presentMonVersion
+                    symmetric_across_targets = $true
+                    process_id_filtered = $true
+                    error = $_.Exception.Message
+                })))
+            }
+        }
+    }
+
+    if (Test-BenchMetricRequested -Name 'key-to-pixel-proxy') {
+        $keyLatencySamples = [Collections.Generic.List[double]]::new()
+        $keyLatencyDetails = [ordered]@{
+            endpoint = 'screen time of the first present attributed to the launched process id after the synthetic keystroke, taken as the present timestamp plus its MsUntilDisplayed'
+            clock = 'QueryPerformanceCounter'
+            clock_origin = 'sampled immediately before SendInput'
+            input_method = 'SendInput unicode "x" to the foregrounded target window'
+            echo_confirmed_by = 'the echo child writes its result file only after Console.ReadKey returns and it has written a full-width nonce to row 1'
+            presented_content_verified = $false
+            not_comparable_with = 'key_to_first_swap_ms_proxy, which requires the accepted swap to contain the controlled echo output generation'
+            observer = 'PresentMon ETW'
+            observer_version = $presentMonVersion
+            display_time_included = $true
+            symmetric_across_targets = $true
+            process_id_filtered = $true
+        }
+        try {
+            if ($null -ne $presentMonReason) { throw $presentMonReason }
+            foreach ($runNumber in 1..$Runs) {
+                $name = "presentmon-key-$runNumber"
+                $readyPath = Join-Path $layout.Temp "$name-ready.txt"
+                $resultPath = Join-Path $layout.Temp "$name-result.json"
+                $csvPath = Join-Path $layout.Temp "$name-presents.csv"
+                Remove-Item -LiteralPath $readyPath, $resultPath -ErrorAction SilentlyContinue
+                $echoNonce = "noctty-bench-$([Guid]::NewGuid().ToString('N'))"
+                if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
+                # Same reason as the idle leg: the capture must already be live
+                # when the target starts, or PresentMon reports nothing for it.
+                $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
+                $run = $null
+                $inputQpc = 0L
+                try {
+                    Start-Sleep -Milliseconds 500
+                    $run = Start-BenchTarget -RunName $name -ChildScript $script:echoScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath, '-ResultPath', $resultPath, '-Nonce', $echoNonce)
+                    Wait-BenchFile -Path $readyPath -Run $run -Description 'PresentMon key-latency child readiness'
+                    $targetHwnd = Wait-BenchTargetMainWindow -Run $run
+                    if (-not [NocttyBenchNative]::ForceForeground($targetHwnd)) { throw 'failed to foreground the target before SendInput' }
+                    # Foregrounding repaints. Let that settle so the present it
+                    # causes is not mistaken for the echo frame.
+                    Start-Sleep -Milliseconds 750
+                    $inputQpc = [Diagnostics.Stopwatch]::GetTimestamp()
+                    [NocttyBenchNative]::SendUnicodeText('x')
+                    Wait-BenchFile -Path $resultPath -Run $run -Description 'PresentMon key-latency echo result'
+                    Start-Sleep -Milliseconds 500
+                }
+                finally {
+                    try { if ($null -ne $run) { Stop-BenchTarget -Run $run } }
+                    catch { $measurementErrors.Add("key-to-first-present target cleanup: $($_.Exception.Message)") }
+                    try { Stop-BenchPresentMonCapture -Capture $capture }
+                    catch { $measurementErrors.Add("key-to-first-present capture stop: $($_.Exception.Message)") }
+                }
+                $presentRows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
+                $firstAfterInput = Get-BenchFirstDisplayedQpcAfter -Rows $presentRows -AfterQpc $inputQpc
+                if ($null -eq $firstAfterInput) {
+                    throw "PresentMon observed no displayed present after the keystroke for pid $($run.Process.Id) ($presentMonProcessName)"
+                }
+                $delta = Get-BenchQpcDeltaMilliseconds -StartQpc $inputQpc -EndQpc $firstAfterInput
+                if ($null -eq $delta) { throw 'the first present after the keystroke precedes the input sample' }
+                $keyLatencySamples.Add($delta)
+            }
+            $metrics.Add((New-BenchMetricRecord -Name 'key_to_first_present_ms' -Unit 'ms' -Samples $keyLatencySamples.ToArray() -Details $keyLatencyDetails))
+        }
+        catch {
+            $measurementErrors.Add("key-to-first-present: $($_.Exception.Message)")
+            if ($null -ne $presentMonReason) {
+                $metrics.Add((New-BenchMetricRecord -Name 'key_to_first_present_ms' -Unit 'ms' -Status 'not-supported' -Details ([ordered]@{
+                    adapter_requirement = "the PresentMon observer is unavailable: $presentMonReason"
+                    comparability_requirement = 'measurement must end at equivalent causal presentation/process-state evidence; producer-only timing is rejected'
+                    required_tooling = 'elevated shell with Intel PresentMon Console on PATH'
+                })))
+            }
+            else {
+                $keyLatencyDetails.error = $_.Exception.Message
+                $metrics.Add((New-BenchMetricRecord -Name 'key_to_first_present_ms' -Unit 'ms' -Status 'error' -Details $keyLatencyDetails))
+            }
+        }
     }
 }
 

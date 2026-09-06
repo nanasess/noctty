@@ -106,5 +106,41 @@
     "provisional": true,
     "source": "Inactive target pending a documented same-machine successful-SwapBuffers interval baseline and tolerance; excludes compositor scanout and photons.",
     "baseline": null
+  },
+  {
+    "metric": "cold_start_first_present_ms",
+    "direction": "max",
+    "value": 1000,
+    "active": false,
+    "provisional": true,
+    "source": "Placeholder; no same-machine baseline exists for the PresentMon comparability layer yet.",
+    "baseline": null
+  },
+  {
+    "metric": "idle_present_count",
+    "direction": "max",
+    "value": 10,
+    "active": false,
+    "provisional": true,
+    "source": "Placeholder; no same-machine baseline exists for the PresentMon comparability layer yet.",
+    "baseline": null
+  },
+  {
+    "metric": "idle_present_gpu_busy_ms",
+    "direction": "max",
+    "value": 100,
+    "active": false,
+    "provisional": true,
+    "source": "Placeholder; no same-machine baseline exists for the PresentMon comparability layer yet.",
+    "baseline": null
+  },
+  {
+    "metric": "key_to_first_present_ms",
+    "direction": "max",
+    "value": 100,
+    "active": false,
+    "provisional": true,
+    "source": "Placeholder; no same-machine baseline exists for the PresentMon comparability layer yet.",
+    "baseline": null
   }
 ]
