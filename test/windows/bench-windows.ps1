@@ -2344,7 +2344,7 @@ if ($script:adapter.Installed) {
         $gpuBusySamples = [Collections.Generic.List[double]]::new()
         $idlePresentDetails = [ordered]@{
             endpoint = 'displayed presents attributed to the launched process id during the idle window'
-            dropped_frames_excluded = $true
+            idle_window_carved_by_timestamp = $true
             idle_interval_seconds = $IdleSeconds
             settle_seconds = 2
             not_comparable_with = 'idle_swap_count_delta, which counts in-process swap atomics rather than displayed presents'
@@ -2361,25 +2361,35 @@ if ($script:adapter.Installed) {
                 $csvPath = Join-Path $layout.Temp "$name-presents.csv"
                 Remove-Item -LiteralPath $readyPath -ErrorAction SilentlyContinue
                 if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
-                $run = Start-BenchTarget -RunName $name -ChildScript $script:holdScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath)
-                $capture = $null
+                # The capture has to be live before the target starts. PresentMon
+                # reported nothing at all for a noctty that was already running
+                # when the session opened, while reporting a Windows Terminal in
+                # the same position, so a capture opened afterwards measures the
+                # observer rather than the terminal. The idle window is carved
+                # out of the capture by timestamp instead.
+                $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
+                $run = $null
+                $idleFromQpc = 0L
+                $idleToQpc = 0L
                 try {
+                    Start-Sleep -Milliseconds 500
+                    $run = Start-BenchTarget -RunName $name -ChildScript $script:holdScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath)
                     Wait-BenchFile -Path $readyPath -Run $run -Description 'PresentMon idle child readiness'
-                    # Startup presents are not idle presents. Settle first, then
-                    # open the capture so the window only covers the quiet period.
+                    # Startup presents are not idle presents.
                     Start-Sleep -Seconds 2
-                    $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath -ExcludeDropped
+                    $idleFromQpc = [Diagnostics.Stopwatch]::GetTimestamp()
                     Start-Sleep -Seconds $IdleSeconds
+                    $idleToQpc = [Diagnostics.Stopwatch]::GetTimestamp()
                 }
                 finally {
-                    try { if ($null -ne $capture) { Stop-BenchPresentMonCapture -Capture $capture } }
-                    catch { $measurementErrors.Add("idle-present-count capture stop: $($_.Exception.Message)") }
-                    try { Stop-BenchTarget -Run $run }
+                    try { if ($null -ne $run) { Stop-BenchTarget -Run $run } }
                     catch { $measurementErrors.Add("idle-present-count target cleanup: $($_.Exception.Message)") }
+                    try { Stop-BenchPresentMonCapture -Capture $capture }
+                    catch { $measurementErrors.Add("idle-present-count capture stop: $($_.Exception.Message)") }
                 }
                 # Zero is a legitimate and desirable result here, so an empty
                 # row set is a sample rather than a failure.
-                $presentRows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
+                $presentRows = Get-BenchPresentRowsBetween -Rows (Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id) -FromQpc $idleFromQpc -ToQpc $idleToQpc
                 $presentCountSamples.Add([double] $presentRows.Count)
                 $gpuBusySamples.Add((Get-BenchPresentGpuBusyMs -Rows $presentRows))
             }
@@ -2454,28 +2464,30 @@ if ($script:adapter.Installed) {
                 Remove-Item -LiteralPath $readyPath, $resultPath -ErrorAction SilentlyContinue
                 $echoNonce = "noctty-bench-$([Guid]::NewGuid().ToString('N'))"
                 if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
-                $run = Start-BenchTarget -RunName $name -ChildScript $script:echoScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath, '-ResultPath', $resultPath, '-Nonce', $echoNonce)
-                $capture = $null
+                # Same reason as the idle leg: the capture must already be live
+                # when the target starts, or PresentMon reports nothing for it.
+                $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
+                $run = $null
                 $inputQpc = 0L
                 try {
+                    Start-Sleep -Milliseconds 500
+                    $run = Start-BenchTarget -RunName $name -ChildScript $script:echoScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath, '-ResultPath', $resultPath, '-Nonce', $echoNonce)
                     Wait-BenchFile -Path $readyPath -Run $run -Description 'PresentMon key-latency child readiness'
                     $targetHwnd = Wait-BenchTargetMainWindow -Run $run
                     if (-not [NocttyBenchNative]::ForceForeground($targetHwnd)) { throw 'failed to foreground the target before SendInput' }
                     # Foregrounding repaints. Let that settle so the present it
                     # causes is not mistaken for the echo frame.
                     Start-Sleep -Milliseconds 750
-                    $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
-                    Start-Sleep -Milliseconds 500
                     $inputQpc = [Diagnostics.Stopwatch]::GetTimestamp()
                     [NocttyBenchNative]::SendUnicodeText('x')
                     Wait-BenchFile -Path $resultPath -Run $run -Description 'PresentMon key-latency echo result'
                     Start-Sleep -Milliseconds 500
                 }
                 finally {
-                    try { if ($null -ne $capture) { Stop-BenchPresentMonCapture -Capture $capture } }
-                    catch { $measurementErrors.Add("key-to-first-present capture stop: $($_.Exception.Message)") }
-                    try { Stop-BenchTarget -Run $run }
+                    try { if ($null -ne $run) { Stop-BenchTarget -Run $run } }
                     catch { $measurementErrors.Add("key-to-first-present target cleanup: $($_.Exception.Message)") }
+                    try { Stop-BenchPresentMonCapture -Capture $capture }
+                    catch { $measurementErrors.Add("key-to-first-present capture stop: $($_.Exception.Message)") }
                 }
                 $presentRows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
                 $firstAfterInput = Get-BenchFirstDisplayedQpcAfter -Rows $presentRows -AfterQpc $inputQpc

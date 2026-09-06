@@ -230,6 +230,24 @@ function Get-BenchFirstPresentQpcAfter {
 # path - a capture that excluded dropped frames produced no rows at all for
 # noctty while producing them for Windows Terminal, which is a property of the
 # filter rather than of the terminals.
+# Rows whose present timestamp falls inside a window. Used to score a capture
+# that deliberately starts before the target launches: PresentMon only reliably
+# reports a process it was already watching, so the capture has to span the
+# launch and the window of interest is then carved out by timestamp.
+function Get-BenchPresentRowsBetween {
+    param(
+        [AllowNull()] [object[]] $Rows = @(),
+        [Parameter(Mandatory)] [long] $FromQpc,
+        [Parameter(Mandatory)] [long] $ToQpc
+    )
+
+    $Rows = @($Rows)
+    return @($Rows | Where-Object {
+        $value = 0L
+        [long]::TryParse($_.TimeInQPC, [ref] $value) -and $value -ge $FromQpc -and $value -le $ToQpc
+    })
+}
+
 function Get-BenchFirstDisplayedQpcAfter {
     param(
         [AllowNull()] [object[]] $Rows = @(),

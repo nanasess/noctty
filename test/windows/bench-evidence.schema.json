@@ -649,7 +649,7 @@
                 "required": [
                   "endpoint",
                   "idle_interval_seconds",
-                  "dropped_frames_excluded",
+                  "idle_window_carved_by_timestamp",
                   "not_comparable_with",
                   "observer",
                   "symmetric_across_targets",
@@ -1026,6 +1026,9 @@
           "type": "boolean"
         },
         "display_time_included": {
+          "const": true
+        },
+        "idle_window_carved_by_timestamp": {
           "const": true
         },
         "error": {
