@@ -624,6 +624,7 @@
                   "input_method",
                   "echo_confirmed_by",
                   "presented_content_verified",
+                  "display_time_included",
                   "not_comparable_with",
                   "observer",
                   "symmetric_across_targets",
@@ -1023,6 +1024,9 @@
         },
         "presented_content_verified": {
           "type": "boolean"
+        },
+        "display_time_included": {
+          "const": true
         },
         "error": {
           "type": ["string", "null"]

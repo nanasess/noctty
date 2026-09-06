@@ -2431,7 +2431,7 @@ if ($script:adapter.Installed) {
     if (Test-BenchMetricRequested -Name 'key-to-pixel-proxy') {
         $keyLatencySamples = [Collections.Generic.List[double]]::new()
         $keyLatencyDetails = [ordered]@{
-            endpoint = 'first displayed present attributed to the launched process id after the synthetic keystroke'
+            endpoint = 'screen time of the first present attributed to the launched process id after the synthetic keystroke, taken as the present timestamp plus its MsUntilDisplayed'
             clock = 'QueryPerformanceCounter'
             clock_origin = 'sampled immediately before SendInput'
             input_method = 'SendInput unicode "x" to the foregrounded target window'
@@ -2440,7 +2440,7 @@ if ($script:adapter.Installed) {
             not_comparable_with = 'key_to_first_swap_ms_proxy, which requires the accepted swap to contain the controlled echo output generation'
             observer = 'PresentMon ETW'
             observer_version = $presentMonVersion
-            dropped_frames_excluded = $true
+            display_time_included = $true
             symmetric_across_targets = $true
             process_id_filtered = $true
         }
@@ -2464,7 +2464,7 @@ if ($script:adapter.Installed) {
                     # Foregrounding repaints. Let that settle so the present it
                     # causes is not mistaken for the echo frame.
                     Start-Sleep -Milliseconds 750
-                    $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath -ExcludeDropped
+                    $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
                     Start-Sleep -Milliseconds 500
                     $inputQpc = [Diagnostics.Stopwatch]::GetTimestamp()
                     [NocttyBenchNative]::SendUnicodeText('x')
@@ -2478,9 +2478,9 @@ if ($script:adapter.Installed) {
                     catch { $measurementErrors.Add("key-to-first-present target cleanup: $($_.Exception.Message)") }
                 }
                 $presentRows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
-                $firstAfterInput = Get-BenchFirstPresentQpcAfter -Rows $presentRows -AfterQpc $inputQpc
+                $firstAfterInput = Get-BenchFirstDisplayedQpcAfter -Rows $presentRows -AfterQpc $inputQpc
                 if ($null -eq $firstAfterInput) {
-                    throw "PresentMon observed no present after the keystroke for pid $($run.Process.Id) ($presentMonProcessName)"
+                    throw "PresentMon observed no displayed present after the keystroke for pid $($run.Process.Id) ($presentMonProcessName)"
                 }
                 $delta = Get-BenchQpcDeltaMilliseconds -StartQpc $inputQpc -EndQpc $firstAfterInput
                 if ($null -eq $delta) { throw 'the first present after the keystroke precedes the input sample' }

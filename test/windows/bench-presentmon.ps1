@@ -220,6 +220,36 @@ function Get-BenchFirstPresentQpcAfter {
 # the process's total GPU usage: work that never reaches a present is not
 # counted. For a terminal sitting idle that distinction is small, but it is the
 # reason this is not called a GPU utilisation figure.
+# The moment a present reached the screen, rather than the moment it was
+# submitted. PresentMon reports that as MsUntilDisplayed on the present row;
+# rows without it never reached the screen and are skipped.
+#
+# This replaces filtering the capture with --exclude_dropped. That flag decides
+# per present-mode what counts as displayed, and noctty (Composed: Copy with
+# GPU GDI) and Windows Terminal (Composed: Flip) do not go through the same
+# path - a capture that excluded dropped frames produced no rows at all for
+# noctty while producing them for Windows Terminal, which is a property of the
+# filter rather than of the terminals.
+function Get-BenchFirstDisplayedQpcAfter {
+    param(
+        [AllowNull()] [object[]] $Rows = @(),
+        [Parameter(Mandatory)] [long] $AfterQpc
+    )
+
+    $Rows = @($Rows)
+    $best = $null
+    foreach ($row in $Rows) {
+        $presentQpc = 0L
+        if (-not [long]::TryParse($row.TimeInQPC, [ref] $presentQpc)) { continue }
+        if ($presentQpc -le $AfterQpc) { continue }
+        $untilDisplayedMs = 0.0
+        if (-not [double]::TryParse($row.MsUntilDisplayed, [ref] $untilDisplayedMs)) { continue }
+        $displayedQpc = $presentQpc + [long] ($untilDisplayedMs / 1000.0 * [Diagnostics.Stopwatch]::Frequency)
+        if ($null -eq $best -or $displayedQpc -lt $best) { $best = $displayedQpc }
+    }
+    return $best
+}
+
 function Get-BenchPresentGpuBusyMs {
     param(
         [AllowNull()] [object[]] $Rows = @()
