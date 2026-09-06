@@ -59,14 +59,24 @@ function Get-BenchPresentMonVersion {
 # launched process id with no presents at all, which would silently read as a
 # failed capture. noctty is launched with `--single-instance=false` and always
 # gets its own process, so callers skip this check for it.
-function Assert-BenchNoForeignTargetProcess {
-    param([Parameter(Mandatory)] [string] $ProcessName)
+function Wait-BenchNoForeignTargetProcess {
+    param(
+        [Parameter(Mandatory)] [string] $ProcessName,
+        [ValidateRange(0, 120)] [int] $TimeoutSeconds = 20
+    )
 
     $bareName = [IO.Path]::GetFileNameWithoutExtension($ProcessName)
-    $existing = @(Get-Process -Name $bareName -ErrorAction SilentlyContinue)
-    if ($existing.Count -gt 0) {
-        $ids = ($existing | ForEach-Object { $_.Id }) -join ', '
-        throw "$ProcessName is already running (pid $ids); close it first so the launched process owns its own window and presents"
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $existing = @(Get-Process -Name $bareName -ErrorAction SilentlyContinue)
+        if ($existing.Count -eq 0) { return }
+        if ([DateTime]::UtcNow -ge $deadline) {
+            $ids = ($existing | ForEach-Object { $_.Id }) -join ', '
+            throw "$ProcessName is still running (pid $ids) after ${TimeoutSeconds}s; a leftover window absorbs the next launch and leaves it with no presents"
+        }
+        # A previous run's window can take a moment to go away, so wait for it
+        # instead of failing the whole measurement on the first check.
+        Start-Sleep -Milliseconds 250
     }
 }
 

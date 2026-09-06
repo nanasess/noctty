@@ -503,13 +503,16 @@ function Get-BenchWindowsTerminalCandidate {
 function Get-BenchTargetAdapter {
     param([Parameter(Mandatory)] [string] $Name)
 
-    $candidates = switch ($Name) {
+    # `switch` unrolls a single-element array into a scalar, and the noctty
+    # branch has exactly one candidate. Without @() around it, the fallback
+    # below indexes a string and resolves to its first character.
+    $candidates = @(switch ($Name) {
         'noctty' { @(Get-InteractiveWin11ExePath -RepoRoot $repoRoot) }
         'alacritty' { @('C:\Program Files\Alacritty\alacritty.exe') }
         'windows-terminal' { @((Get-BenchWindowsTerminalCandidate), 'wt.exe') }
         'tabby' { @('tabby.exe', (Join-Path $env:LOCALAPPDATA 'Programs\Tabby\Tabby.exe')) }
         'wave' { @('wave.exe', (Join-Path $env:LOCALAPPDATA 'Programs\Wave\Wave.exe')) }
-    }
+    })
     $resolved = $null
     foreach ($candidate in $candidates) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
@@ -2245,7 +2248,6 @@ if ($script:adapter.Installed) {
     $presentMonReason = Test-BenchPresentMonReady
     $presentMonProcessName = [IO.Path]::GetFileName($script:adapter.ExePath)
     $presentMonVersion = Get-BenchPresentMonVersion
-    $presentMonStatus = if ($null -ne $presentMonReason) { 'not-supported' } else { 'error' }
 
     if (Test-BenchMetricRequested -Name 'cold-start') {
         $firstPresentSamples = [Collections.Generic.List[double]]::new()
@@ -2266,7 +2268,7 @@ if ($script:adapter.Installed) {
                 $readyPath = Join-Path $layout.Temp "$name-ready.txt"
                 $csvPath = Join-Path $layout.Temp "$name-presents.csv"
                 Remove-Item -LiteralPath $readyPath -ErrorAction SilentlyContinue
-                if ($Target -ne 'noctty') { Assert-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
+                if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
                 $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
                 $run = $null
                 try {
@@ -2278,8 +2280,12 @@ if ($script:adapter.Installed) {
                     Start-Sleep -Milliseconds 500
                 }
                 finally {
-                    Stop-BenchPresentMonCapture -Capture $capture
-                    if ($null -ne $run) { Stop-BenchTarget -Run $run }
+                    # Both cleanups have to run even when one throws. A surviving
+                    # terminal window would otherwise absorb every later launch.
+                    try { if ($null -ne $run) { Stop-BenchTarget -Run $run } }
+                    catch { $measurementErrors.Add("cold-start-first-present target cleanup: $($_.Exception.Message)") }
+                    try { Stop-BenchPresentMonCapture -Capture $capture }
+                    catch { $measurementErrors.Add("cold-start-first-present capture stop: $($_.Exception.Message)") }
                 }
                 $rows = Get-BenchPresentMonRows -CsvPath $csvPath -ProcessId $run.Process.Id
                 if ($rows.Count -eq 0) {
@@ -2294,8 +2300,17 @@ if ($script:adapter.Installed) {
         }
         catch {
             $measurementErrors.Add("cold-start-first-present: $($_.Exception.Message)")
-            $firstPresentDetails.error = $_.Exception.Message
-            $metrics.Add((New-BenchMetricRecord -Name 'cold_start_first_present_ms' -Unit 'ms' -Status $presentMonStatus -Details $firstPresentDetails))
+            if ($null -ne $presentMonReason) {
+                $metrics.Add((New-BenchMetricRecord -Name 'cold_start_first_present_ms' -Unit 'ms' -Status 'not-supported' -Details ([ordered]@{
+                    adapter_requirement = "the PresentMon observer is unavailable: $presentMonReason"
+                    comparability_requirement = 'measurement must end at equivalent causal presentation/process-state evidence; producer-only timing is rejected'
+                    required_tooling = 'elevated shell with Intel PresentMon Console on PATH'
+                })))
+            }
+            else {
+                $firstPresentDetails.error = $_.Exception.Message
+                $metrics.Add((New-BenchMetricRecord -Name 'cold_start_first_present_ms' -Unit 'ms' -Status 'error' -Details $firstPresentDetails))
+            }
         }
     }
 
@@ -2319,7 +2334,7 @@ if ($script:adapter.Installed) {
                 $readyPath = Join-Path $layout.Temp "$name-ready.txt"
                 $csvPath = Join-Path $layout.Temp "$name-presents.csv"
                 Remove-Item -LiteralPath $readyPath -ErrorAction SilentlyContinue
-                if ($Target -ne 'noctty') { Assert-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
+                if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
                 $run = Start-BenchTarget -RunName $name -ChildScript $script:holdScriptPath -ChildScriptArguments @('-ReadyPath', $readyPath)
                 $capture = $null
                 try {
@@ -2331,8 +2346,10 @@ if ($script:adapter.Installed) {
                     Start-Sleep -Seconds $IdleSeconds
                 }
                 finally {
-                    if ($null -ne $capture) { Stop-BenchPresentMonCapture -Capture $capture }
-                    Stop-BenchTarget -Run $run
+                    try { if ($null -ne $capture) { Stop-BenchPresentMonCapture -Capture $capture } }
+                    catch { $measurementErrors.Add("idle-present-count capture stop: $($_.Exception.Message)") }
+                    try { Stop-BenchTarget -Run $run }
+                    catch { $measurementErrors.Add("idle-present-count target cleanup: $($_.Exception.Message)") }
                 }
                 # Zero is a legitimate and desirable result here, so an empty
                 # row set is a sample rather than a failure.
@@ -2343,8 +2360,17 @@ if ($script:adapter.Installed) {
         }
         catch {
             $measurementErrors.Add("idle-present-count: $($_.Exception.Message)")
-            $idlePresentDetails.error = $_.Exception.Message
-            $metrics.Add((New-BenchMetricRecord -Name 'idle_present_count' -Unit 'count' -Status $presentMonStatus -Details $idlePresentDetails))
+            if ($null -ne $presentMonReason) {
+                $metrics.Add((New-BenchMetricRecord -Name 'idle_present_count' -Unit 'count' -Status 'not-supported' -Details ([ordered]@{
+                    adapter_requirement = "the PresentMon observer is unavailable: $presentMonReason"
+                    comparability_requirement = 'measurement must end at equivalent causal presentation/process-state evidence; producer-only timing is rejected'
+                    required_tooling = 'elevated shell with Intel PresentMon Console on PATH'
+                })))
+            }
+            else {
+                $idlePresentDetails.error = $_.Exception.Message
+                $metrics.Add((New-BenchMetricRecord -Name 'idle_present_count' -Unit 'count' -Status 'error' -Details $idlePresentDetails))
+            }
         }
     }
 }

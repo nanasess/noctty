@@ -554,6 +554,56 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "required": ["metric", "status"],
+            "properties": {
+              "metric": { "const": "cold_start_first_present_ms" },
+              "status": { "enum": ["pass", "fail", "error"] }
+            }
+          },
+          "then": {
+            "required": ["details"],
+            "properties": {
+              "details": {
+                "required": [
+                  "endpoint",
+                  "clock",
+                  "clock_origin",
+                  "not_comparable_with",
+                  "observer",
+                  "symmetric_across_targets",
+                  "process_id_filtered"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["metric", "status"],
+            "properties": {
+              "metric": { "const": "idle_present_count" },
+              "status": { "enum": ["pass", "fail", "error"] }
+            }
+          },
+          "then": {
+            "required": ["details"],
+            "properties": {
+              "details": {
+                "required": [
+                  "endpoint",
+                  "idle_interval_seconds",
+                  "dropped_frames_excluded",
+                  "not_comparable_with",
+                  "observer",
+                  "symmetric_across_targets",
+                  "process_id_filtered"
+                ]
+              }
+            }
+          }
         }
       ],
       "properties": {
@@ -570,7 +620,9 @@
             "idle_swap_count_delta",
             "conpty_rtt_ms",
             "key_to_first_swap_ms_proxy",
-            "frame_time_p95_ms"
+            "frame_time_p95_ms",
+            "cold_start_first_present_ms",
+            "idle_present_count"
           ]
         },
         "status": {
