@@ -186,9 +186,13 @@ function Get-BenchPresentMonRows {
 
 function Get-BenchFirstPresentQpc {
     param(
-        [Parameter(Mandatory)] [object[]] $Rows
+        # A function returning @() yields nothing, so the caller's variable is
+        # $null rather than an empty array. Accept that instead of failing to
+        # bind on the one case that matters: a target that presented nothing.
+        [AllowNull()] [object[]] $Rows = @()
     )
 
+    $Rows = @($Rows)
     $timestamps = @($Rows | ForEach-Object {
         $value = 0L
         if ([long]::TryParse($_.TimeInQPC, [ref] $value)) { $value }
@@ -199,10 +203,11 @@ function Get-BenchFirstPresentQpc {
 
 function Get-BenchFirstPresentQpcAfter {
     param(
-        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Rows,
+        [AllowNull()] [object[]] $Rows = @(),
         [Parameter(Mandatory)] [long] $AfterQpc
     )
 
+    $Rows = @($Rows)
     $timestamps = @($Rows | ForEach-Object {
         $value = 0L
         if ([long]::TryParse($_.TimeInQPC, [ref] $value) -and $value -gt $AfterQpc) { $value }
@@ -217,9 +222,10 @@ function Get-BenchFirstPresentQpcAfter {
 # reason this is not called a GPU utilisation figure.
 function Get-BenchPresentGpuBusyMs {
     param(
-        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Rows
+        [AllowNull()] [object[]] $Rows = @()
     )
 
+    $Rows = @($Rows)
     $total = 0.0
     foreach ($row in $Rows) {
         $value = 0.0
