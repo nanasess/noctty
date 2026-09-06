@@ -197,6 +197,37 @@ function Get-BenchFirstPresentQpc {
     return ($timestamps | Measure-Object -Minimum).Minimum
 }
 
+function Get-BenchFirstPresentQpcAfter {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Rows,
+        [Parameter(Mandatory)] [long] $AfterQpc
+    )
+
+    $timestamps = @($Rows | ForEach-Object {
+        $value = 0L
+        if ([long]::TryParse($_.TimeInQPC, [ref] $value) -and $value -gt $AfterQpc) { $value }
+    })
+    if ($timestamps.Count -eq 0) { return $null }
+    return ($timestamps | Measure-Object -Minimum).Minimum
+}
+
+# GPU work PresentMon attributes to the rows handed in. This is narrower than
+# the process's total GPU usage: work that never reaches a present is not
+# counted. For a terminal sitting idle that distinction is small, but it is the
+# reason this is not called a GPU utilisation figure.
+function Get-BenchPresentGpuBusyMs {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Rows
+    )
+
+    $total = 0.0
+    foreach ($row in $Rows) {
+        $value = 0.0
+        if ([double]::TryParse($row.MsGPUBusy, [ref] $value)) { $total += $value }
+    }
+    return [Math]::Round($total, 6)
+}
+
 function Get-BenchQpcDeltaMilliseconds {
     param(
         [Parameter(Mandatory)] [long] $StartQpc,

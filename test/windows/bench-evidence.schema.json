@@ -584,6 +584,59 @@
           "if": {
             "required": ["metric", "status"],
             "properties": {
+              "metric": { "const": "idle_present_gpu_busy_ms" },
+              "status": { "enum": ["pass", "fail", "error"] }
+            }
+          },
+          "then": {
+            "required": ["details"],
+            "properties": {
+              "details": {
+                "required": [
+                  "endpoint",
+                  "gpu_work_scope",
+                  "idle_interval_seconds",
+                  "not_comparable_with",
+                  "observer",
+                  "symmetric_across_targets",
+                  "process_id_filtered"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["metric", "status"],
+            "properties": {
+              "metric": { "const": "key_to_first_present_ms" },
+              "status": { "enum": ["pass", "fail", "error"] }
+            }
+          },
+          "then": {
+            "required": ["details"],
+            "properties": {
+              "details": {
+                "required": [
+                  "endpoint",
+                  "clock",
+                  "clock_origin",
+                  "input_method",
+                  "echo_confirmed_by",
+                  "presented_content_verified",
+                  "not_comparable_with",
+                  "observer",
+                  "symmetric_across_targets",
+                  "process_id_filtered"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["metric", "status"],
+            "properties": {
               "metric": { "const": "idle_present_count" },
               "status": { "enum": ["pass", "fail", "error"] }
             }
@@ -622,7 +675,9 @@
             "key_to_first_swap_ms_proxy",
             "frame_time_p95_ms",
             "cold_start_first_present_ms",
-            "idle_present_count"
+            "idle_present_count",
+            "idle_present_gpu_busy_ms",
+            "key_to_first_present_ms"
           ]
         },
         "status": {
@@ -953,6 +1008,21 @@
         "settle_seconds": {
           "type": "number",
           "minimum": 0
+        },
+        "gpu_work_scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input_method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "echo_confirmed_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "presented_content_verified": {
+          "type": "boolean"
         },
         "error": {
           "type": ["string", "null"]

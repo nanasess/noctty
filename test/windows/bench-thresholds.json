@@ -124,5 +124,23 @@
     "provisional": true,
     "source": "Placeholder; no same-machine baseline exists for the PresentMon comparability layer yet.",
     "baseline": null
+  },
+  {
+    "metric": "idle_present_gpu_busy_ms",
+    "direction": "max",
+    "value": 100,
+    "active": false,
+    "provisional": true,
+    "source": "Placeholder; no same-machine baseline exists for the PresentMon comparability layer yet.",
+    "baseline": null
+  },
+  {
+    "metric": "key_to_first_present_ms",
+    "direction": "max",
+    "value": 100,
+    "active": false,
+    "provisional": true,
+    "source": "Placeholder; no same-machine baseline exists for the PresentMon comparability layer yet.",
+    "baseline": null
   }
 ]
