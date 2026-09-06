@@ -930,6 +930,30 @@
           "type": "string",
           "minLength": 1
         },
+        "observer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observer_version": {
+          "type": ["string", "null"]
+        },
+        "symmetric_across_targets": {
+          "const": true
+        },
+        "process_id_filtered": {
+          "const": true
+        },
+        "not_comparable_with": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dropped_frames_excluded": {
+          "const": true
+        },
+        "settle_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
         "error": {
           "type": ["string", "null"]
         }
