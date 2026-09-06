@@ -2271,6 +2271,7 @@ if ($script:adapter.Installed) {
                 if ($Target -ne 'noctty') { Wait-BenchNoForeignTargetProcess -ProcessName $presentMonProcessName }
                 $capture = Start-BenchPresentMonCapture -ProcessName $presentMonProcessName -CsvPath $csvPath
                 $run = $null
+                $captureStopError = $null
                 try {
                     # The trace session has to be live before the target exists,
                     # or the first present lands outside the capture window.
@@ -2285,8 +2286,12 @@ if ($script:adapter.Installed) {
                     try { if ($null -ne $run) { Stop-BenchTarget -Run $run } }
                     catch { $measurementErrors.Add("cold-start-first-present target cleanup: $($_.Exception.Message)") }
                     try { Stop-BenchPresentMonCapture -Capture $capture }
-                    catch { $measurementErrors.Add("cold-start-first-present capture stop: $($_.Exception.Message)") }
+                    catch { $captureStopError = $_.Exception.Message }
                 }
+                # A capture that would not stop cleanly cannot be trusted as a
+                # first-present record, so say that instead of reading the file
+                # anyway and reporting whatever surfaced.
+                if (-not [string]::IsNullOrWhiteSpace($captureStopError)) { throw $captureStopError }
                 # Not $rows: PowerShell variable names are case-insensitive, so
                 # that would assign into the script's [ValidateRange(10,500)] [int]
                 # $Rows parameter and fail on the row count.

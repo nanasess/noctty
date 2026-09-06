@@ -147,11 +147,27 @@ function Stop-BenchPresentMonCapture {
 function Get-BenchPresentMonRows {
     param(
         [Parameter(Mandatory)] [string] $CsvPath,
-        [int] $ProcessId
+        [int] $ProcessId,
+        [ValidateRange(1, 60)] [int] $ReadTimeoutSeconds = 15
     )
 
     if (-not (Test-Path -LiteralPath $CsvPath -PathType Leaf)) { return @() }
-    $rows = @(Import-Csv -LiteralPath $CsvPath)
+
+    # PresentMon can still be releasing the file when its process is already
+    # gone, and Import-Csv fails hard on a locked file. Retry rather than
+    # losing a measurement to a handle that is about to close anyway.
+    $deadline = [DateTime]::UtcNow.AddSeconds($ReadTimeoutSeconds)
+    $rows = $null
+    while ($true) {
+        try {
+            $rows = @(Import-Csv -LiteralPath $CsvPath)
+            break
+        }
+        catch [System.IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw }
+            Start-Sleep -Milliseconds 100
+        }
+    }
     if ($PSBoundParameters.ContainsKey('ProcessId')) {
         $rows = @($rows | Where-Object { [int] $_.ProcessID -eq $ProcessId })
     }
