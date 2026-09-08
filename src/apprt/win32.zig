@@ -10980,7 +10980,8 @@ const Host = struct {
     // something to show and reused after that; `tab_tooltip_tab_id` names the
     // tab it currently describes.
     tab_tooltip_hwnd: ?HWND = null,
-    tab_tooltip_tab_id: ?usize = null,
+    tab_tooltip_tab_id: ?u32 = null,
+    tab_tooltip_uia_provider: ?*win32_uia.ChromeControlProvider = null,
 
     // Command palette list UI. Backed by a custom child HWND shown
     // only while the palette is open. `palette_list_ranked` caches the
@@ -13551,6 +13552,7 @@ const Host = struct {
         }
         destroyChildWindow(&self.palette_list_hwnd);
         destroyChildWindow(&self.tab_drop_preview_hwnd);
+        detachChromeControlProvider(self.app, &self.tab_tooltip_uia_provider);
         destroyChildWindow(&self.tab_tooltip_hwnd);
         self.tab_tooltip_tab_id = null;
 
@@ -13753,7 +13755,13 @@ const Host = struct {
             if (shown == tab.id) return;
         }
         const title = tab.cached_button_title orelse return self.hideTabTooltip();
-        if (!labels.hostLabelIsCompacted(title, tab.cached_button_label_max_width)) {
+        // Measure the drawn label rather than the bare title. The label also
+        // carries the tab index, the active marker and the pane count, and GDI
+        // applies `DT_END_ELLIPSIS` to all of it inside a button that has
+        // already given up its close zone, so a title that fits on its own can
+        // still lose its tail to those decorations.
+        const label = tab.cached_button_label orelse return self.hideTabTooltip();
+        if (!labels.hostLabelIsCompacted(label, tab.cached_button_label_max_width)) {
             return self.hideTabTooltip();
         }
 
@@ -13819,10 +13827,22 @@ const Host = struct {
             ) orelse return;
             setWindowData(created, self);
             self.tab_tooltip_hwnd = created;
+            // AGENTS.md: a new UI widget ships with its provider. The tooltip
+            // is not focusable and exposes no pattern -- a reader needs its
+            // name and its ToolTip control type, nothing more.
+            self.tab_tooltip_uia_provider = self.createChromeUiaProvider(created, .{
+                .ctx = @ptrCast(self),
+                .role = .tooltip,
+                .name = &tabTooltipUiaName,
+            });
         }
         const tooltip = self.tab_tooltip_hwnd orelse return;
         _ = sys.SetWindowTextW(tooltip, text_w.ptr);
+        const tooltip_tab_changed = self.tab_tooltip_tab_id != tab.id;
         self.tab_tooltip_tab_id = tab.id;
+        if (tooltip_tab_changed) {
+            if (self.tab_tooltip_uia_provider) |provider| provider.raiseNameChanged();
+        }
         // `place` works in the host's client space; the popup is top level.
         var origin: POINT = .{ .x = placement.left, .y = placement.top };
         if (sys.ClientToScreen(host_hwnd, &origin) == 0) return self.hideTabTooltip();
@@ -14977,6 +14997,18 @@ const Host = struct {
             return std.fmt.bufPrint(buf, "{d}: {s}", .{ index + 1, title }) catch fallback;
         }
         return "Tab";
+    }
+
+    /// UIA name for the tab title tooltip: the full title it exists to show.
+    fn tabTooltipUiaName(ctx: *anyopaque, _: usize, buf: []u8) []const u8 {
+        const self: *Host = @ptrCast(@alignCast(ctx));
+        const shown = self.tab_tooltip_tab_id orelse return "";
+        for (self.tabs.items) |*tab| {
+            if (tab.id != shown) continue;
+            const title = tab.cached_button_title orelse return "";
+            return std.fmt.bufPrint(buf, "{s}", .{title}) catch "";
+        }
+        return "";
     }
 
     fn tabItemUiaSelected(ctx: *anyopaque, tab_id: usize) bool {
@@ -22548,6 +22580,15 @@ fn tabTooltipProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callcon
         c.WM_PAINT => {
             if (windowData(Host, hwnd)) |host| host.paintTabTooltip();
             return 0;
+        },
+        c.WM_GETOBJECT => {
+            const host = windowData(Host, hwnd) orelse
+                return sys.DefWindowProcW(hwnd, msg, wParam, lParam);
+            if (!host.app.com_initialized) return sys.DefWindowProcW(hwnd, msg, wParam, lParam);
+            if (host.tab_tooltip_uia_provider) |provider| {
+                if (win32_uia.returnChromeControlProvider(hwnd, wParam, lParam, provider)) |lr| return lr;
+            }
+            return sys.DefWindowProcW(hwnd, msg, wParam, lParam);
         },
         // The popup lands between the pointer and the tab it describes. It must
         // never take a hit test or an activation away from the strip.

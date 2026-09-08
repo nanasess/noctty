@@ -38,11 +38,15 @@ pub const Size = struct {
 ///
 /// The tooltip hangs below its tab by `gap` px and is left-aligned with it, so
 /// the eye can follow the label straight down into the full title. A tab near
-/// the right edge slides left instead of hanging off the window; the last
-/// resort is the left margin, where a title wider than the window is clipped by
-/// the popup's own `DT_END_ELLIPSIS` rather than drawn out of view.
+/// the right edge slides left instead of hanging off the window.
+///
+/// The popup is a top-level window, so nothing clips it for us: a title wider
+/// than the window would be drawn over whatever sits beside the window, and the
+/// part past the screen edge would be unreachable either way. The width is
+/// clamped to the client area instead, and the popup's own `DT_END_ELLIPSIS`
+/// then truncates the text it cannot fit.
 pub fn place(anchor: Rect, size: Size, client: Rect, gap: i32, margin: i32) Rect {
-    const w = @max(0, size.width);
+    const w = @min(@max(0, size.width), @max(0, client.width() - margin * 2));
     const h = @max(0, size.height);
 
     var left = anchor.left;
@@ -91,7 +95,7 @@ test "win32 tab tooltip slides left at the window edge" {
     try std.testing.expectEqual(@as(i32, 794), placement.right);
 }
 
-test "win32 tab tooltip falls back to the left margin when it cannot fit" {
+test "win32 tab tooltip clamps to the client width and stays in the window" {
     const placement = place(
         .{ .left = 10, .top = 0, .right = 100, .bottom = 32 },
         .{ .width = 400, .height = 24 },
@@ -100,7 +104,8 @@ test "win32 tab tooltip falls back to the left margin when it cannot fit" {
         6,
     );
     try std.testing.expectEqual(@as(i32, 6), placement.left);
-    try std.testing.expectEqual(@as(i32, 406), placement.right);
+    try std.testing.expectEqual(@as(i32, 194), placement.right);
+    try std.testing.expect(placement.right <= 200 - 6);
 }
 
 test "win32 tab tooltip moves above the tab when the window is short" {
