@@ -15395,16 +15395,25 @@ const Host = struct {
         return changed;
     }
 
+    /// Prompt text of the active confirm overlay, for the chrome paint
+    /// path. Null while no payload is installed, which makes the label
+    /// builders fall back to their placeholders.
+    fn confirmText(self: *const Host) ?OverlayConfirmText {
+        const payload = self.confirm_payload orelse return null;
+        return .{ .title = payload.title, .body = payload.body };
+    }
+
     fn syncOverlayHint(self: *Host) !bool {
         const hint_hwnd = self.overlay_hint_hwnd orelse return false;
         const alloc = self.app.core_app.alloc;
-        // Confirm overlays use the hint HWND to render the payload
-        // body — the explanatory text ("A process is still running…").
-        // Make it visible and write the body; bypass the generic
-        // EDIT-driven hint composition.
+        // Confirm overlays render the payload body through the chrome
+        // paint path, not this control: the hint HWND is never given a
+        // rect by `layout`, so showing it here only put a stray 100x18
+        // STATIC at client (0,0). Keep the text in sync — a follow-up
+        // that places the control (and exposes it to UIA) needs it —
+        // but leave it hidden.
         if (self.overlay_mode == .confirm) {
             const body = if (self.confirm_payload) |p| p.body else "";
-            _ = applyChildVisibility(hint_hwnd, &self.overlay_hint_placement, true);
             return try syncWindowTextUtf8Cached(
                 alloc,
                 hint_hwnd,
@@ -15460,6 +15469,8 @@ const Host = struct {
             if (self.activeTab()) |tab| tab.leafCount() else 1,
             self.paletteSnapshot(),
             mru,
+            // Unreachable for `.confirm`: that mode returns above.
+            null,
         );
         defer alloc.free(hint);
         return try syncWindowTextUtf8Cached(
@@ -18530,6 +18541,7 @@ const Host = struct {
                         if (surface) |value| value.search_selected else null,
                         overlay_status,
                         self.palettePresentation(),
+                        self.confirmText(),
                     ) catch return false;
                 defer alloc.free(overlay_label);
                 if (self.cached_overlay_paint_label_w) |old| alloc.free(old);
@@ -18568,6 +18580,7 @@ const Host = struct {
                         self.paletteSnapshot(),
                         mru,
                         self.palettePresentation(),
+                        self.confirmText(),
                     ) catch return false;
                 };
                 defer alloc.free(overlay_feedback);
@@ -18640,7 +18653,37 @@ const Host = struct {
             }
             _ = sys.SetTextColor(hdc, overlay_label_color);
             if (overlay_label_reservation > 0) if (self.cached_overlay_paint_label_w) |overlay_label_w| {
-                textOutWz(hdc, overlay_label_x, overlay_rect.top + self.scaled(7), overlay_label_w);
+                if (self.overlay_mode == .confirm) {
+                    // A confirm title is caller-supplied ("Allow clipboard
+                    // paste?") and routinely wider than the fixed label
+                    // reservation, so bound it at the action buttons and
+                    // ellipsize instead of running underneath them. The
+                    // EDIT frame is hidden in this mode, so its span is
+                    // free for the title.
+                    var title_rect = RECT{
+                        .left = overlay_label_x,
+                        .top = overlay_rect.top + self.scaled(5),
+                        .right = @max(overlay_label_x, overlayEditFrameRect(
+                            client_rect.right,
+                            tab_h,
+                            overlay_padding,
+                            self.scaled(host_overlay_label_width),
+                            overlay_action_layout.cancel_width,
+                            overlay_action_layout.accept_reservation_width,
+                            self.scaled(host_overlay_row_height),
+                            self.current_dpi,
+                        ).right),
+                        .bottom = overlay_rect.top + self.scaled(25),
+                    };
+                    drawTextWz(
+                        hdc,
+                        overlay_label_w,
+                        &title_rect,
+                        c.DT_LEFT | c.DT_VCENTER | c.DT_SINGLELINE | c.DT_NOPREFIX | c.DT_END_ELLIPSIS,
+                    );
+                } else {
+                    textOutWz(hdc, overlay_label_x, overlay_rect.top + self.scaled(7), overlay_label_w);
+                }
             };
 
             if (overlayEditFrameVisible(self.overlay_mode)) {
@@ -22784,6 +22827,7 @@ fn searchBarSeparatorX(left: ChildPlacement, right: ChildPlacement) ?i32 {
 
 const buildTabOverviewOverlayLabel = labels.buildTabOverviewOverlayLabel;
 
+const OverlayConfirmText = labels.ConfirmText;
 const buildOverlayPaintLabelText = labels.buildOverlayPaintLabelText;
 
 const buildOverlayFeedbackText = labels.buildOverlayFeedbackText;
