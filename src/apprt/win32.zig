@@ -14986,9 +14986,22 @@ const Host = struct {
         const initial_text = initial orelse "";
         _ = try self.setOverlayEditText(initial_text);
 
-        _ = try self.syncOverlayLabel();
-        _ = try self.syncOverlayHint();
+        // Honor the sync results. `syncOverlayLabel` / `syncOverlayHint`
+        // are the only change detector the chrome paint's text cache
+        // has: `refreshChrome` normally consumes their return value and
+        // invalidates on it. Opening an overlay performs the same sync
+        // here, so discarding the result left the paint reusing the
+        // PREVIOUS overlay's cached strings — `hideOverlay` never frees
+        // those, and no `.confirm` path marks the text dirty the way
+        // the palette and profile paths do for their modes. The forced
+        // transition paint at the end of this function is synchronous
+        // and clears `chrome_repaint_dirty`, so the stale strings would
+        // be painted and then persist rather than merely flicker.
+        var text_changed = false;
+        text_changed = (try self.syncOverlayLabel()) or text_changed;
+        text_changed = (try self.syncOverlayHint()) or text_changed;
         _ = try self.syncOverlayButtons();
+        if (text_changed) self.invalidateOverlayText();
         // The command palette gets a scrollable list below the EDIT;
         // rebuild it for the initial (usually empty) query so the
         // ranker's "show all" path has something visible to draw.
